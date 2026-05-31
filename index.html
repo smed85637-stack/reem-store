@@ -684,12 +684,20 @@
 
     </div>
 
-    <!-- ================= البرمجة التفاعلية بالـ Vanilla JS للتحكم الشامل ================= -->
-    <script>
-        // داتا السلع والمنتجات تبدأ فارغة ليكون السوق متاحاً للتجربة والملء من قبلك بالكامل!
-        let products = JSON.parse(localStorage.getItem('reem_products') || '[]');
+    <!-- مكتبة Supabase لربط المنتجات بين كل الهواتف -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
-        // الفئات الجديدة المحددة بدقة بطلبك لخدمة متجر ريم الإلكتروني
+    <!-- ================= البرمجة التفاعلية بالـ Vanilla JS + Supabase ================= -->
+    <script>
+        const SUPABASE_URL = "https://vsrvisekserejdppkeud.supabase.co";
+        const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_IjuaZOr6wopiw590bLm8OQ_8H5cwQDk";
+        const PRODUCT_IMAGES_BUCKET = "product-images";
+        const DEFAULT_PRODUCT_IMAGE = "https://images.unsplash.com/photo-1531403009284-440f080d1e12?auto=format&fit=crop&q=80&w=400";
+
+        const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+
+        let products = [];
+
         const categories = [
             "الكل", 
             "الكتب و المكتبات", 
@@ -711,7 +719,6 @@
             "أصناف أخرى"
         ];
 
-        // الأيقونات التعبيرية المناسبة لكل فئة لعرضها في الصفحة الرئيسية بشكل جذاب
         const categoryEmojis = {
             "الكتب و المكتبات": "📚",
             "عالم الطفل": "🧸",
@@ -732,29 +739,32 @@
             "أصناف أخرى": "📦"
         };
 
-        // الحالات الإدارية والتفاعلية للتطبيق
-        let favorites = new Set(JSON.parse(localStorage.getItem('reem_favorites') || '[]')); 
+        let favorites = new Set(JSON.parse(localStorage.getItem('reem_favorites') || '[]'));
         let activeTab = 'home';
         let searchQuery = '';
         let selectedCategory = 'الكل';
-        let uploadedImageBase64 = ''; // لتخزين كود الصورة المرفوعة من الهاتف
-        let editedImageBase64 = ''; // لتخزين الصورة أثناء التعديل
-        
-        // نظام تسجيل الدخول الخاص بمدير المتجر
+        let uploadedImageBase64 = '';
+        let uploadedImageFile = null;
+        let editedImageBase64 = '';
+        let editedImageFile = null;
         let isAdminLoggedIn = false;
+        let isLoadingProducts = false;
 
-        // إعدادات المتجر المتغيرة برمجياً من لوحة التحكم
         let storeConfig = {
             name: "متجر ريم الإلكتروني",
             bannerTitle: "ابدأ بعرض بضاعتك مجاناً!",
             bannerText: "أضف منتجاتك الخاصة الآن، وحدد موقعك بدقة، ودع الزبائن يتواصلون معك مباشرة عبر واتساب وهاتفك."
         };
 
+        try {
+            const savedConfig = JSON.parse(localStorage.getItem('reem_store_config') || 'null');
+            if (savedConfig) storeConfig = { ...storeConfig, ...savedConfig };
+        } catch (error) {
+            console.warn('تعذر تحميل إعدادات المتجر:', error);
+        }
 
-        // حفظ البيانات محلياً حتى لا تختفي بعد تحديث الصفحة في نفس الجهاز
         function saveLocalData() {
             try {
-                localStorage.setItem('reem_products', JSON.stringify(products));
                 localStorage.setItem('reem_favorites', JSON.stringify(Array.from(favorites)));
                 localStorage.setItem('reem_store_config', JSON.stringify(storeConfig));
             } catch (error) {
@@ -762,40 +772,129 @@
             }
         }
 
-        // استرجاع إعدادات هوية المتجر
-        try {
-            const savedConfig = JSON.parse(localStorage.getItem('reem_store_config') || 'null');
-            if (savedConfig) {
-                storeConfig = { ...storeConfig, ...savedConfig };
-            }
-        } catch (error) {
-            console.warn('تعذر تحميل إعدادات المتجر:', error);
-        }
-
-        // تشغيل البناء الأساسي والتمهيد عند تشغيل الكود في CodePen
-        window.addEventListener('DOMContentLoaded', () => {
+        window.addEventListener('DOMContentLoaded', async () => {
             initCategories();
             initAddFormCategories();
             initEditFormCategories();
-            renderProducts();
+            applyStoreIdentity();
             renderFavorites();
             renderAdminProducts();
             updateTotalIndicators();
-            applyStoreIdentity();
+            await loadProductsFromSupabase();
+            subscribeToProductChanges();
         });
 
-        // 1. تطبيق وتعميم اسم المتجر والهوية الترحيبية على الواجهات
-        function applyStoreIdentity() {
-            document.getElementById('display-store-name').innerText = storeConfig.name;
-            document.getElementById('display-banner-title').innerText = storeConfig.bannerTitle;
-            document.getElementById('display-banner-text').innerText = storeConfig.bannerText;
-
-            // تحديث قيم مدخلات لوحة التحكم
-            document.getElementById('admin-input-store-name').value = storeConfig.name;
-            document.getElementById('admin-input-banner-title').value = storeConfig.bannerTitle;
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>'"]/g, char => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                "'": '&#39;',
+                '"': '&quot;'
+            }[char]));
         }
 
-        // تحديث لحظي لهوية المتجر من لوحة تحكم المدير
+        function jsArg(value) {
+            return JSON.stringify(String(value)).replace(/"/g, '&quot;');
+        }
+
+        function normalizeProduct(row) {
+            return {
+                id: Number(row.id),
+                title: row.title || '',
+                price: row.price || '',
+                location: row.location || '',
+                category: row.category || 'أصناف أخرى',
+                phone: row.phone || '',
+                whatsapp: row.whatsapp || '',
+                image: row.image || DEFAULT_PRODUCT_IMAGE,
+                description: row.description || '',
+                created_at: row.created_at || null
+            };
+        }
+
+        function formatPrice(price) {
+            const clean = String(price || '').replace(/\s/g, '').replace(',', '.');
+            const number = Number(clean);
+            if (!Number.isFinite(number)) return String(price || '');
+            return number.toLocaleString('fr-FR');
+        }
+
+        function normalizeWhatsappNumber(value) {
+            let digits = String(value || '').replace(/\D/g, '');
+            if (digits.startsWith('00')) digits = digits.slice(2);
+            if (digits.length === 8) digits = '222' + digits;
+            return digits;
+        }
+
+        async function loadProductsFromSupabase() {
+            isLoadingProducts = true;
+            renderProducts();
+            try {
+                const { data, error } = await supabaseClient
+                    .from('products')
+                    .select('*')
+                    .order('created_at', { ascending: false });
+
+                if (error) throw error;
+                products = (data || []).map(normalizeProduct);
+            } catch (error) {
+                console.error('Supabase load error:', error);
+                showToast('⚠️ تعذر تحميل المنتجات من قاعدة البيانات');
+            } finally {
+                isLoadingProducts = false;
+                renderProducts();
+                renderFavorites();
+                renderAdminProducts();
+                updateTotalIndicators();
+            }
+        }
+
+        function subscribeToProductChanges() {
+            supabaseClient
+                .channel('public-products-sync')
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
+                    loadProductsFromSupabase();
+                })
+                .subscribe();
+        }
+
+        async function uploadImageToSupabase(file) {
+            if (!file) return '';
+            const extension = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+            const fileName = `${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`;
+            const filePath = `products/${fileName}`;
+
+            const { error: uploadError } = await supabaseClient.storage
+                .from(PRODUCT_IMAGES_BUCKET)
+                .upload(filePath, file, {
+                    cacheControl: '3600',
+                    upsert: false
+                });
+
+            if (uploadError) throw uploadError;
+
+            const { data } = supabaseClient.storage
+                .from(PRODUCT_IMAGES_BUCKET)
+                .getPublicUrl(filePath);
+
+            return data.publicUrl;
+        }
+
+        function applyStoreIdentity() {
+            const storeName = document.getElementById('display-store-name');
+            const bannerTitle = document.getElementById('display-banner-title');
+            const bannerText = document.getElementById('display-banner-text');
+            const inputStoreName = document.getElementById('admin-input-store-name');
+            const inputBannerTitle = document.getElementById('admin-input-banner-title');
+
+            if (storeName) storeName.innerText = storeConfig.name;
+            if (bannerTitle) bannerTitle.innerText = storeConfig.bannerTitle;
+            if (bannerText) bannerText.innerText = storeConfig.bannerText;
+            if (inputStoreName) inputStoreName.value = storeConfig.name;
+            if (inputBannerTitle) inputBannerTitle.value = storeConfig.bannerTitle;
+        }
+
         function updateStoreIdentity() {
             storeConfig.name = document.getElementById('admin-input-store-name').value.trim() || "متجر ريم الإلكتروني";
             storeConfig.bannerTitle = document.getElementById('admin-input-banner-title').value.trim() || "ابدأ بعرض بضاعتك مجاناً!";
@@ -803,7 +902,6 @@
             saveLocalData();
         }
 
-        // نظام تسجيل دخول المدير المميز والآمن ببياناتك المطلوبة
         function loginAsAdmin() {
             const email = document.getElementById('admin-email-input').value.trim();
             const password = document.getElementById('admin-password-input').value.trim();
@@ -811,89 +909,74 @@
             if (email === "Moktar@gmail.com" && password === "37929637") {
                 isAdminLoggedIn = true;
                 showToast("تم تسجيل الدخول بنجاح يا مدير! 🔑", true);
-                
-                // الانتقال لعرض لوحة التحكم وإخفاء حقل تسجيل الدخول
                 document.getElementById('admin-login-view').classList.add('hidden');
                 document.getElementById('admin-dashboard-view').classList.remove('hidden');
-                
-                // تحديث الشارة في الملف الشخصي
-                document.getElementById('profile-role-badge').innerText = "المالك والمتحكم 🛠️";
-
-                // مسح البيانات المدخلة للأمان
+                const roleBadge = document.getElementById('profile-role-badge');
+                if (roleBadge) roleBadge.innerText = "المالك والمتحكم 🛠️";
                 document.getElementById('admin-email-input').value = '';
                 document.getElementById('admin-password-input').value = '';
-
                 renderAdminProducts();
                 updateTotalIndicators();
             } else {
-                showToast("⚠️ خطأ: البريد الإلكتروني أو الرمز السري غير صحيح!", false);
+                showToast("⚠️ خطأ: البريد الإلكتروني أو الرمز السري غير صحيح!");
             }
         }
 
-        // تسجيل خروج المدير
         function logoutAdmin() {
             isAdminLoggedIn = false;
             showToast("تم تسجيل خروج المدير وقفل اللوحة بنجاح 🔒", true);
             document.getElementById('admin-login-view').classList.remove('hidden');
             document.getElementById('admin-dashboard-view').classList.add('hidden');
-            document.getElementById('profile-role-badge').innerText = "زائر / بائع حر";
+            const roleBadge = document.getElementById('profile-role-badge');
+            if (roleBadge) roleBadge.innerText = "زائر / بائع حر";
         }
 
-        // 2. بناء شريط الفئات التفاعلي والقائمة السريعة بالرئيسية
         function initCategories() {
             const bar = document.getElementById('categories-bar');
-            bar.innerHTML = categories.map(cat => `
-                <button 
-                    onclick="setCategory('${cat}')"
-                    id="cat-btn-${cat}"
-                    class="px-4 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all duration-200 ${
-                        selectedCategory === cat 
-                        ? 'bg-blue-600 text-white shadow-xs' 
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                    }"
-                >
-                    ${cat}
-                </button>
-            `).join('');
+            if (bar) {
+                bar.innerHTML = categories.map(cat => `
+                    <button 
+                        onclick="setCategory(${jsArg(cat)})"
+                        id="cat-btn-${escapeHtml(cat)}"
+                        class="px-4 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all duration-200 ${selectedCategory === cat ? 'bg-blue-600 text-white shadow-xs' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}"
+                    >
+                        ${escapeHtml(cat)}
+                    </button>
+                `).join('');
+            }
 
-            // الفئات الفاخرة للصفحة الرئيسية لتسهيل التصفح
             const quickCat = document.getElementById('home-quick-categories');
-            quickCat.innerHTML = categories.slice(1).map(cat => {
-                const emoji = categoryEmojis[cat] || "🛍️";
-                return `
-                    <div onclick="setCategory('${cat}'); navigate('market')" class="bg-white p-3.5 rounded-2xl border border-slate-100 text-center cursor-pointer hover:border-blue-500 transition-all shadow-xs flex flex-col justify-between items-center h-24">
-                        <div class="w-8 h-8 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mx-auto text-sm">
-                            ${emoji}
+            if (quickCat) {
+                quickCat.innerHTML = categories.slice(1).map(cat => {
+                    const emoji = categoryEmojis[cat] || "🛍️";
+                    return `
+                        <div onclick="setCategory(${jsArg(cat)}); navigate('market')" class="bg-white p-3.5 rounded-2xl border border-slate-100 text-center cursor-pointer hover:border-blue-500 transition-all shadow-xs flex flex-col justify-between items-center h-24">
+                            <div class="w-8 h-8 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mx-auto text-sm">${emoji}</div>
+                            <span class="text-[9px] font-bold text-slate-700 block truncate w-full">${escapeHtml(cat)}</span>
                         </div>
-                        <span class="text-[9px] font-bold text-slate-700 block truncate w-full">${cat}</span>
-                    </div>
-                `;
-            }).join('');
+                    `;
+                }).join('');
+            }
         }
 
-        // 3. تصفية السلع في السوق
         function setCategory(cat) {
             selectedCategory = cat;
             categories.forEach(c => {
                 const btn = document.getElementById(`cat-btn-${c}`);
                 if (btn) {
-                    if (c === cat) {
-                        btn.className = "px-4 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all duration-200 bg-blue-600 text-white shadow-xs";
-                    } else {
-                        btn.className = "px-4 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all duration-200 bg-slate-100 text-slate-600 hover:bg-slate-200";
-                    }
+                    btn.className = c === cat
+                        ? "px-4 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all duration-200 bg-blue-600 text-white shadow-xs"
+                        : "px-4 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all duration-200 bg-slate-100 text-slate-600 hover:bg-slate-200";
                 }
             });
             renderProducts();
         }
 
-        // 4. معالجة البحث في المعروضات
         function handleSearch(val) {
             searchQuery = val;
             renderProducts();
         }
 
-        // 5. معالجة ورفع صورة السلعة من ملفات الهاتف للسلعة الجديدة
         function handleImageUpload(event) {
             const file = event.target.files[0];
             const labelText = document.getElementById('file-label-text');
@@ -901,24 +984,25 @@
             const placeholderIcon = document.getElementById('image-placeholder-icon');
 
             if (!file) return;
-
-            labelText.innerText = file.name.substring(0, 15) + '...';
+            uploadedImageFile = file;
+            if (labelText) labelText.innerText = file.name.substring(0, 15) + '...';
 
             const reader = new FileReader();
             reader.onload = function(e) {
                 uploadedImageBase64 = e.target.result;
-                preview.src = uploadedImageBase64;
-                preview.classList.remove('hidden');
-                placeholderIcon.classList.add('hidden');
+                if (preview) {
+                    preview.src = uploadedImageBase64;
+                    preview.classList.remove('hidden');
+                }
+                if (placeholderIcon) placeholderIcon.classList.add('hidden');
             };
             reader.readAsDataURL(file);
         }
 
-        // معالجة صورة التعديل من ملفات الهاتف
         function handleEditImageUpload(event) {
             const file = event.target.files[0];
             if (!file) return;
-
+            editedImageFile = file;
             const reader = new FileReader();
             reader.onload = function(e) {
                 editedImageBase64 = e.target.result;
@@ -926,14 +1010,26 @@
             reader.readAsDataURL(file);
         }
 
-        // 6. ريندر وعرض السلع في السوق الحرة
         function renderProducts() {
             const grid = document.getElementById('products-grid');
-            
+            if (!grid) return;
+
+            if (isLoadingProducts) {
+                grid.innerHTML = `
+                    <div class="col-span-2 text-center py-20 text-slate-400">
+                        <div class="text-4xl mb-3">⏳</div>
+                        <p class="text-xs font-bold text-slate-600">جاري تحميل المنتجات...</p>
+                    </div>
+                `;
+                return;
+            }
+
+            const q = searchQuery.toLowerCase();
             const filtered = products.filter(p => {
-                const matchesSearch = p.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                                     p.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                                     p.location.toLowerCase().includes(searchQuery.toLowerCase());
+                const matchesSearch = String(p.title).toLowerCase().includes(q) ||
+                    String(p.description).toLowerCase().includes(q) ||
+                    String(p.location).toLowerCase().includes(q) ||
+                    String(p.category).toLowerCase().includes(q);
                 const matchesCategory = selectedCategory === 'الكل' || p.category === selectedCategory;
                 return matchesSearch && matchesCategory;
             });
@@ -942,8 +1038,8 @@
                 grid.innerHTML = `
                     <div class="col-span-2 text-center py-20 text-slate-400">
                         <div class="text-4xl mb-3">🛍️</div>
-                        <p class="text-xs font-bold text-slate-600">السوق فارغ حالياً</p>
-                        <p class="text-[10px] mt-1 max-w-[200px] mx-auto leading-relaxed">السوق فارغ تماماً بناءً على طلبك. ابدأ بنشر سلع من الهاتف، أو اذهب للوحة التحكم واضغط على "تعبئة تجريبية" لتجربة العرض!</p>
+                        <p class="text-xs font-bold text-slate-600">لا توجد منتجات حالياً</p>
+                        <p class="text-[10px] mt-1 max-w-[200px] mx-auto leading-relaxed">أضف أول منتج، وسيظهر لكل شخص يفتح رابط المتجر من أي هاتف.</p>
                     </div>
                 `;
                 return;
@@ -952,39 +1048,25 @@
             grid.innerHTML = filtered.map(product => {
                 const isFav = favorites.has(product.id);
                 return `
-                    <div 
-                        onclick="openProductDetail(${product.id})"
-                        class="group flex flex-col bg-white rounded-2xl overflow-hidden cursor-pointer transition-all duration-300 hover:shadow-sm border border-slate-100"
-                    >
+                    <div onclick="openProductDetail(${product.id})" class="group flex flex-col bg-white rounded-2xl overflow-hidden cursor-pointer transition-all duration-300 hover:shadow-sm border border-slate-100">
                         <div class="relative aspect-square w-full bg-slate-50 overflow-hidden rounded-2xl">
-                            <img src="${product.image}" alt="${product.title}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
-                            <button 
-                                onclick="toggleFav(${product.id}, event)"
-                                class="absolute top-2.5 left-2.5 p-2 bg-white/90 backdrop-blur-xs rounded-full shadow-xs transition-transform active:scale-90 hover:bg-white"
-                            >
+                            <img src="${escapeHtml(product.image)}" alt="${escapeHtml(product.title)}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                            <button onclick="toggleFav(${product.id}, event)" class="absolute top-2.5 left-2.5 p-2 bg-white/90 backdrop-blur-xs rounded-full shadow-xs transition-transform active:scale-90 hover:bg-white">
                                 <svg class="w-4 h-4 transition-colors ${isFav ? 'fill-rose-500 text-rose-500' : 'text-slate-600'}" fill="${isFav ? 'currentColor' : 'none'}" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"></path>
                                 </svg>
                             </button>
                         </div>
-
                         <div class="pt-2 px-1.5 pb-2 flex flex-col gap-1">
-                            <h3 class="font-bold text-slate-800 text-xs leading-tight truncate">
-                                ${product.title}
-                            </h3>
-                            <div class="flex items-center gap-1 text-slate-400 text-[10px]">
-                                📍 <span class="truncate font-semibold text-slate-500">${product.location}</span>
-                            </div>
-                            <div class="text-secondary font-bold text-[12px] mt-0.5">
-                                ${product.price} MRU
-                            </div>
+                            <h3 class="font-bold text-slate-800 text-xs leading-tight truncate">${escapeHtml(product.title)}</h3>
+                            <div class="flex items-center gap-1 text-slate-400 text-[10px]">📍 <span class="truncate font-semibold text-slate-500">${escapeHtml(product.location)}</span></div>
+                            <div class="text-secondary font-bold text-[12px] mt-0.5">${escapeHtml(product.price)} MRU</div>
                         </div>
                     </div>
                 `;
             }).join('');
         }
 
-        // 7. إدارة المفضلة
         function toggleFav(id, event) {
             if (event) event.stopPropagation();
             if (favorites.has(id)) {
@@ -994,26 +1076,23 @@
                 favorites.add(id);
                 showToast("تم الحفظ في مفضلتك 💖");
             }
+            saveLocalData();
             renderProducts();
             renderFavorites();
             updateTotalIndicators();
-            saveLocalData();
         }
 
         function renderFavorites() {
             const list = document.getElementById('favorites-list');
             const favProducts = products.filter(p => favorites.has(p.id));
-
             const badgeFav = document.getElementById('badge-fav');
             if (badgeFav) {
                 badgeFav.innerText = favorites.size;
                 badgeFav.classList.toggle('hidden', favorites.size === 0);
             }
-
             const favCountBadge = document.getElementById('fav-count-badge');
-            if (favCountBadge) {
-                favCountBadge.innerText = `${favorites.size} سلع`;
-            }
+            if (favCountBadge) favCountBadge.innerText = `${favorites.size} سلع`;
+            if (!list) return;
 
             if (favProducts.length === 0) {
                 list.innerHTML = `
@@ -1021,43 +1100,33 @@
                         <div class="text-3xl mb-3">❤️</div>
                         <h3 class="font-bold text-slate-700 text-xs mb-1">المفضلة خالية</h3>
                         <p class="text-[10px] text-slate-400 max-w-[200px] mx-auto leading-relaxed">تصفح السوق واضغط على القلب لإضافة المعروضات التي تعجبك هنا.</p>
-                        <button onclick="navigate('market')" class="mt-4 bg-blue-600 text-white text-[10px] px-4 py-2 rounded-xl font-bold hover:bg-blue-700 transition-all">
-                            الذهاب للتسوق
-                        </button>
+                        <button onclick="navigate('market')" class="mt-4 bg-blue-600 text-white text-[10px] px-4 py-2 rounded-xl font-bold hover:bg-blue-700 transition-all">الذهاب للتسوق</button>
                     </div>
                 `;
                 return;
             }
 
             list.innerHTML = favProducts.map(product => `
-                <div 
-                    onclick="openProductDetail(${product.id})"
-                    class="bg-white p-3 rounded-2xl border border-slate-100 flex gap-3 cursor-pointer hover:border-slate-200 transition-all"
-                >
-                    <img src="${product.image}" alt="${product.title}" class="w-16 h-16 rounded-xl object-cover shrink-0" />
+                <div onclick="openProductDetail(${product.id})" class="bg-white p-3 rounded-2xl border border-slate-100 flex gap-3 cursor-pointer hover:border-slate-200 transition-all">
+                    <img src="${escapeHtml(product.image)}" alt="${escapeHtml(product.title)}" class="w-16 h-16 rounded-xl object-cover shrink-0" />
                     <div class="flex flex-col justify-between py-1 flex-1 min-w-0">
                         <div>
-                            <h4 class="font-bold text-slate-800 text-xs truncate">${product.title}</h4>
-                            <span class="text-[10px] text-slate-400 font-bold">📍 ${product.location}</span>
+                            <h4 class="font-bold text-slate-800 text-xs truncate">${escapeHtml(product.title)}</h4>
+                            <span class="text-[10px] text-slate-400 font-bold">📍 ${escapeHtml(product.location)}</span>
                         </div>
                         <div class="flex justify-between items-center">
-                            <span class="text-blue-600 font-bold text-xs">${product.price} MRU</span>
-                            <button 
-                                onclick="toggleFav(${product.id}, event)"
-                                class="text-rose-500 hover:text-rose-600 text-[10px] font-bold px-2 py-1 rounded-lg bg-rose-50"
-                            >
-                                حذف
-                            </button>
+                            <span class="text-blue-600 font-bold text-xs">${escapeHtml(product.price)} MRU</span>
+                            <button onclick="toggleFav(${product.id}, event)" class="text-rose-500 hover:text-rose-600 text-[10px] font-bold px-2 py-1 rounded-lg bg-rose-50">حذف</button>
                         </div>
                     </div>
                 </div>
             `).join('');
         }
 
-        // 8. لوحة تحكم المدير وتعبئة/إدارة معروضات المتجر بالكامل
         function renderAdminProducts() {
             const container = document.getElementById('admin-products-list');
-            
+            if (!container) return;
+
             if (products.length === 0) {
                 container.innerHTML = `
                     <div class="text-center py-10 bg-white rounded-2xl border border-slate-100">
@@ -1070,185 +1139,121 @@
             container.innerHTML = products.map(product => `
                 <div class="bg-white p-3 rounded-2xl border border-slate-150 flex items-center justify-between gap-3 shadow-xs">
                     <div class="flex items-center gap-3 min-w-0 cursor-pointer" onclick="openProductDetail(${product.id})">
-                        <img src="${product.image}" alt="" class="w-11 h-11 rounded-lg object-cover shrink-0" />
+                        <img src="${escapeHtml(product.image)}" alt="" class="w-11 h-11 rounded-lg object-cover shrink-0" />
                         <div class="min-w-0">
-                            <h4 class="font-extrabold text-slate-800 text-xs truncate">${product.title}</h4>
-                            <span class="text-[9px] text-purple-600 font-bold block">${product.category}</span>
-                            <span class="text-[10px] text-slate-500 font-semibold">${product.price} MRU</span>
+                            <h4 class="font-extrabold text-slate-800 text-xs truncate">${escapeHtml(product.title)}</h4>
+                            <span class="text-[9px] text-purple-600 font-bold block">${escapeHtml(product.category)}</span>
+                            <span class="text-[10px] text-slate-500 font-semibold">${escapeHtml(product.price)} MRU</span>
                         </div>
                     </div>
                     <div class="flex items-center gap-1.5 shrink-0">
-                        <button onclick="openEditModal(${product.id})" class="bg-blue-50 hover:bg-blue-100 text-blue-600 text-xs px-2.5 py-1.5 rounded-lg font-bold transition-all">
-                            تعديل ⚙️
-                        </button>
-                        <button onclick="deleteProductByAdmin(${product.id})" class="bg-red-50 hover:bg-red-100 text-red-600 text-xs p-1.5 rounded-lg transition-all">
-                            🗑️
-                        </button>
+                        <button onclick="openEditModal(${product.id})" class="bg-blue-50 hover:bg-blue-100 text-blue-600 text-xs px-2.5 py-1.5 rounded-lg font-bold transition-all">تعديل ⚙️</button>
+                        <button onclick="deleteProductByAdmin(${product.id})" class="bg-red-50 hover:bg-red-100 text-red-600 text-xs p-1.5 rounded-lg transition-all">🗑️</button>
                     </div>
                 </div>
             `).join('');
         }
 
-        // حذف سلعة بواسطة مدير المتجر
-        function deleteProductByAdmin(id) {
+        async function deleteProductByAdmin(id) {
+            if (!isAdminLoggedIn) {
+                showToast('⚠️ يرجى تسجيل الدخول كمدير أولاً');
+                navigate('admin');
+                return;
+            }
+            const oldProducts = [...products];
             products = products.filter(p => p.id !== id);
             favorites.delete(id);
-            
-            showToast("تم حذف المنتج فوراً من متجر ريم 📢", true);
             renderProducts();
             renderFavorites();
             renderAdminProducts();
             updateTotalIndicators();
-            saveLocalData();
-        }
-
-        // مسح كل السلع من المتجر بضغطة زر للمتحكم
-        function deleteAllProducts() {
-            products = [];
-            favorites.clear();
-            showToast("تم تنظيف السوق ومسح كافة السلع! 🧹", true);
-            renderProducts();
-            renderFavorites();
-            renderAdminProducts();
-            updateTotalIndicators();
-            saveLocalData();
-        }
-
-        // زر التعبئة السحرية بالسلع التجريبية لتجربة وفحص المتجر
-        function injectDemoProducts() {
-            const demoItems = [
-                {
-                    id: 101,
-                    title: "قصص الأنبياء المصورة للأطفال",
-                    price: "450",
-                    location: "تفرغ زينة",
-                    category: "الكتب و المكتبات",
-                    phone: "44123456",
-                    whatsapp: "22244123456",
-                    image: "https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=400",
-                    description: "طقم كتب قصص الأنبياء المصورة والملونة للأطفال، أوراق ممتازة ممغنطة ومقاومة للتمزق لتعليم طفلك."
-                },
-                {
-                    id: 102,
-                    title: "لعبة مكعبات بناء خشبية",
-                    price: "800",
-                    location: "عرفات",
-                    category: "عالم الطفل",
-                    phone: "33887766",
-                    whatsapp: "22233887766",
-                    image: "https://images.unsplash.com/photo-1515488042361-404e9250afef?auto=format&fit=crop&q=80&w=400",
-                    description: "مجموعة مكعبات خشبية ملونة عالية الجودة خالية من المواد السامة لتنمية ذكاء الطفل وحسه المعماري."
-                },
-                {
-                    id: 103,
-                    title: "شاحن بطارية سيارات سريع",
-                    price: "1 500",
-                    location: "لكصر",
-                    category: "مستلزمات السيارات",
-                    phone: "22003344",
-                    whatsapp: "22222003344",
-                    image: "https://images.unsplash.com/photo-1486006920555-c77dce18193b?auto=format&fit=crop&q=80&w=400",
-                    description: "شاحن خارجي ذكي لبطارية السيارة مع شاشة رقمية لحساب نسبة الشحن وقوة التيار، فعال جداً في الحالات الطارئة."
-                },
-                {
-                    id: 104,
-                    title: "جهاز ميكروويف منزلي",
-                    price: "4 200",
-                    location: "تفرغ زينة",
-                    category: "المنزل و المطبخ",
-                    phone: "33111222",
-                    whatsapp: "22233111222",
-                    image: "https://images.unsplash.com/photo-1574269909862-7e1d70bb8078?auto=format&fit=crop&q=80&w=400",
-                    description: "ميكروويف عالي الكفاءة بسعة 20 لتراً، يحتوي على برامج تسخين وفك تجميد أوتوماتيكية وسريعة."
-                },
-                {
-                    id: 105,
-                    title: "فستان نسائي كلاسيكي طويل",
-                    price: "1 200",
-                    location: "نواذيبو",
-                    category: "الموضة والملابس",
-                    phone: "49991111",
-                    whatsapp: "22249991111",
-                    image: "https://images.unsplash.com/photo-1595777457583-95e059d581b8?auto=format&fit=crop&q=80&w=400",
-                    description: "فستان سهرة كلاسيكي طويل بلون راقي، قماش فاخر وبارد يتناسب مع المناسبات والاحتفالات العامة والخاصة."
-                },
-                {
-                    id: 106,
-                    title: "كمبيوتر محمول للألعاب والدراسة",
-                    price: "18 000",
-                    location: "السبخة",
-                    category: "أجهزة الكمبيوتر",
-                    phone: "22551100",
-                    whatsapp: "22222551100",
-                    image: "https://images.unsplash.com/photo-1593642632823-8f785ba67e45?auto=format&fit=crop&q=80&w=400",
-                    description: "لابتوب حديث بمعالج قوي وذاكرة عشوائية 16 جيجابايت، هارد ديسك SSD سريع جداً ومناسب لأعمال التصميم والتحرير والألعاب."
-                },
-                {
-                    id: 107,
-                    title: "دراجة نارية رباعية العجلات",
-                    price: "24 000",
-                    location: "تفرغ زينة",
-                    category: "مركبات",
-                    phone: "36111111",
-                    whatsapp: "22236111111",
-                    image: "https://images.unsplash.com/photo-1558981806-ec527fa84c39?auto=format&fit=crop&q=80&w=400",
-                    description: "دراجة نارية رباعية الدفع ممتازة للمناطق الوعرة والرمال، محرك قوي واقتصادي في الوقود."
-                },
-                {
-                    id: 108,
-                    title: "شقة للإيجار اليومي",
-                    price: "2 500",
-                    location: "تفرغ زينة",
-                    category: "عقار",
-                    phone: "44556677",
-                    whatsapp: "22244556677",
-                    image: "https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?auto=format&fit=crop&q=80&w=400",
-                    description: "شقة مفروشة بالكامل تشطيب ديلوكس، تكييف مركزي، إنترنت مجاني، وموقع هادئ جداً بالقرب من الخدمات."
-                },
-                {
-                    id: 109,
-                    title: "هاتف ذكي بذاكرة واسعة",
-                    price: "9 500",
-                    location: "عرفات",
-                    category: "الإلكترونيات و الهواتف",
-                    phone: "36224466",
-                    whatsapp: "22236224466",
-                    image: "https://images.unsplash.com/photo-1511707171634-5f897ff02aa9?auto=format&fit=crop&q=80&w=400",
-                    description: "هاتف ذكي حديث بشاشة كاملة وبطارية تدوم طويلاً، كاميرا خلفية ثلاثية بدقة عالية لأروع لقطات السفر."
-                }
-            ];
-
-            products = [...demoItems, ...products];
-            showToast("تمت تعبئة متجرك بالسلع التجريبية للتصنيفات الجديدة! 🧪", true);
-            renderProducts();
-            renderAdminProducts();
-            updateTotalIndicators();
-            saveLocalData();
-        }
-
-        // تحديث إجمالي المؤشرات والإحصائيات في كل الشاشات للتحكم
-        function updateTotalIndicators() {
-            const total = products.length;
-            document.getElementById('home-total-count').innerText = `${total} منتج`;
-            document.getElementById('market-total-indicator').innerText = `${total} إعلان`;
-            
-            // إحصائيات لوحة تحكم المدير
-            document.getElementById('admin-stat-total').innerText = total;
-            document.getElementById('admin-stat-favs').innerText = favorites.size;
-            document.getElementById('admin-stat-views').innerText = 120 + (total * 7); // رقم تجميلي تفاعلي
-            
-            // عدد إعلانات المدير - يظهر فقط إذا كان العنصر موجوداً
-            const myAdsCount = document.getElementById('my-ads-count');
-            if (myAdsCount) {
-                myAdsCount.innerText = `${total} إعلان نشط`;
+            try {
+                const { error } = await supabaseClient.from('products').delete().eq('id', id);
+                if (error) throw error;
+                showToast("تم حذف المنتج من المتجر العام 📢", true);
+            } catch (error) {
+                products = oldProducts;
+                renderProducts();
+                renderFavorites();
+                renderAdminProducts();
+                updateTotalIndicators();
+                showToast('⚠️ تعذر حذف المنتج من قاعدة البيانات');
+                console.error(error);
             }
         }
 
-        // 9. التنقل التفاعلي السلس والكامل بين الصفحات
+        async function deleteAllProducts() {
+            if (!isAdminLoggedIn) {
+                showToast('⚠️ يرجى تسجيل الدخول كمدير أولاً');
+                navigate('admin');
+                return;
+            }
+            if (!confirm('هل تريد حذف كل المنتجات من المتجر العام؟')) return;
+            const oldProducts = [...products];
+            products = [];
+            favorites.clear();
+            renderProducts();
+            renderFavorites();
+            renderAdminProducts();
+            updateTotalIndicators();
+            try {
+                const { error } = await supabaseClient.from('products').delete().neq('id', 0);
+                if (error) throw error;
+                saveLocalData();
+                showToast("تم تنظيف السوق ومسح كافة السلع! 🧹", true);
+            } catch (error) {
+                products = oldProducts;
+                renderProducts();
+                renderFavorites();
+                renderAdminProducts();
+                updateTotalIndicators();
+                showToast('⚠️ تعذر حذف كل المنتجات');
+                console.error(error);
+            }
+        }
+
+        async function injectDemoProducts() {
+            if (!isAdminLoggedIn) {
+                showToast('⚠️ يرجى تسجيل الدخول كمدير أولاً');
+                navigate('admin');
+                return;
+            }
+            const demoItems = [
+                { title: "قصص الأنبياء المصورة للأطفال", price: "450", location: "تفرغ زينة", category: "الكتب و المكتبات", phone: "44123456", whatsapp: "22244123456", image: "https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=400", description: "طقم كتب مصورة وملونة للأطفال." },
+                { title: "لعبة مكعبات بناء خشبية", price: "800", location: "عرفات", category: "عالم الطفل", phone: "33887766", whatsapp: "22233887766", image: "https://images.unsplash.com/photo-1515488042361-404e9250afef?auto=format&fit=crop&q=80&w=400", description: "مجموعة مكعبات خشبية ملونة عالية الجودة." },
+                { title: "كمبيوتر محمول للألعاب والدراسة", price: "18 000", location: "السبخة", category: "أجهزة الكمبيوتر", phone: "22551100", whatsapp: "22222551100", image: "https://images.unsplash.com/photo-1593642632823-8f785ba67e45?auto=format&fit=crop&q=80&w=400", description: "لابتوب مناسب للدراسة والعمل والتصميم." }
+            ];
+            try {
+                const { error } = await supabaseClient.from('products').insert(demoItems);
+                if (error) throw error;
+                showToast("تمت تعبئة متجرك بالسلع التجريبية! 🧪", true);
+                await loadProductsFromSupabase();
+            } catch (error) {
+                showToast('⚠️ تعذر إضافة السلع التجريبية');
+                console.error(error);
+            }
+        }
+
+        function updateTotalIndicators() {
+            const total = products.length;
+            const homeTotal = document.getElementById('home-total-count');
+            const marketTotal = document.getElementById('market-total-indicator');
+            const adminTotal = document.getElementById('admin-stat-total');
+            const adminFavs = document.getElementById('admin-stat-favs');
+            const adminViews = document.getElementById('admin-stat-views');
+            const myAdsCount = document.getElementById('my-ads-count');
+
+            if (homeTotal) homeTotal.innerText = `${total} منتج`;
+            if (marketTotal) marketTotal.innerText = `${total} إعلان`;
+            if (adminTotal) adminTotal.innerText = total;
+            if (adminFavs) adminFavs.innerText = favorites.size;
+            if (adminViews) adminViews.innerText = 120 + (total * 7);
+            if (myAdsCount) myAdsCount.innerText = `${total} إعلان نشط`;
+        }
+
         function navigate(tabId) {
             activeTab = tabId;
             const tabPages = ['home', 'market', 'orders', 'admin', 'profile'];
-            
             tabPages.forEach(p => {
                 const pageEl = document.getElementById(`page-${p}`);
                 const btnEl = document.getElementById(`btn-tab-${p}`);
@@ -1261,38 +1266,20 @@
                         pageEl.classList.remove('block');
                     }
                 }
-                
                 if (btnEl) {
                     if (p === tabId) {
-                        // تلوين الزر النشط بألوان بنفسجية ممتازة للوحة التحكم
-                        if (p === 'admin') {
-                            btnEl.className = "flex flex-col items-center gap-1 flex-1 transition-all text-purple-600 font-bold";
-                            
-                            // إدارة العرض الفرعي لصفحة المدير بناء على حالة تسجيل الدخول
-                            if (isAdminLoggedIn) {
-                                document.getElementById('admin-login-view').classList.add('hidden');
-                                document.getElementById('admin-dashboard-view').classList.remove('hidden');
-                            } else {
-                                document.getElementById('admin-login-view').classList.remove('hidden');
-                                document.getElementById('admin-dashboard-view').classList.add('hidden');
-                            }
-                        } else {
-                            btnEl.className = "flex flex-col items-center gap-1 flex-1 transition-all text-blue-600 font-bold";
-                        }
-                        if (p === 'market') {
-                            document.getElementById('market-active-indicator').classList.remove('hidden');
-                        }
+                        btnEl.className = p === 'admin'
+                            ? "flex flex-col items-center gap-1 flex-1 transition-all text-purple-600 font-bold"
+                            : "flex flex-col items-center gap-1 flex-1 transition-all text-blue-600 font-bold";
+                        if (p === 'market') document.getElementById('market-active-indicator')?.classList.remove('hidden');
                     } else {
                         btnEl.className = "flex flex-col items-center gap-1 flex-1 transition-all text-slate-400";
-                        if (p === 'market') {
-                            document.getElementById('market-active-indicator').classList.add('hidden');
-                        }
+                        if (p === 'market') document.getElementById('market-active-indicator')?.classList.add('hidden');
                     }
                 }
             });
         }
 
-        // 10. تفاصيل معروض السلعة بالبيانات المخصصة وأرقام التواصل
         function openProductDetail(id) {
             const product = products.find(p => p.id === id);
             if (!product) return;
@@ -1302,30 +1289,23 @@
             document.getElementById('detail-category').innerText = product.category;
             document.getElementById('detail-price').innerText = `${product.price} MRU`;
             document.getElementById('detail-location').innerText = product.location;
-            document.getElementById('detail-description').innerText = product.description;
-            document.getElementById('seller-avatar').innerText = product.title[0];
+            document.getElementById('detail-description').innerText = product.description || 'لا يوجد وصف إضافي.';
+            document.getElementById('seller-avatar').innerText = product.title ? product.title[0] : 'ر';
             document.getElementById('detail-seller-phone').innerText = `هاتف: ${product.phone}`;
-
-            // إظهار الأرقام بشكل واضح جداً لتسهيل النسخ اليدوي للمستخدمين
             document.getElementById('display-direct-phone').innerText = product.phone;
             document.getElementById('display-whatsapp-phone').innerText = product.whatsapp;
 
-            const btnCall = document.getElementById('btn-call-seller');
-            const btnWhatsapp = document.getElementById('btn-whatsapp-seller');
-
-            btnCall.onclick = () => {
+            document.getElementById('btn-call-seller').onclick = () => {
                 showToast(`جاري الاتصال بـ: ${product.phone}`);
                 window.location.href = `tel:${product.phone}`;
             };
-
-            btnWhatsapp.onclick = () => {
+            document.getElementById('btn-whatsapp-seller').onclick = () => {
                 showToast("توجيه إلى محادثة واتساب البائع...");
-                window.open(`https://wa.me/${product.whatsapp}`, "_blank");
+                window.open(`https://wa.me/${normalizeWhatsappNumber(product.whatsapp)}`, "_blank");
             };
 
             const modal = document.getElementById('product-detail-modal');
             const card = document.getElementById('detail-card');
-            
             modal.classList.remove('opacity-0', 'pointer-events-none');
             card.classList.remove('modal-inactive');
             card.classList.add('modal-active');
@@ -1334,28 +1314,28 @@
         function closeProductDetail() {
             const modal = document.getElementById('product-detail-modal');
             const card = document.getElementById('detail-card');
-            
-            card.className = "bg-white w-full max-h-[85%] rounded-t-[32px] overflow-hidden flex flex-col modal-inactive";
-            setTimeout(() => {
-                modal.classList.add('opacity-0', 'pointer-events-none');
-            }, 250);
+            card.classList.remove('modal-active');
+            card.classList.add('modal-inactive');
+            setTimeout(() => modal.classList.add('opacity-0', 'pointer-events-none'), 250);
         }
 
         function copyProductLink() {
-            const temp = document.createElement('input');
-            temp.value = window.location.href;
-            document.body.appendChild(temp);
-            temp.select();
-            document.execCommand('copy');
-            document.body.removeChild(temp);
-            showToast("تم نسخ رابط السلعة بنجاح! 🔗");
+            navigator.clipboard?.writeText(window.location.href).then(() => {
+                showToast("تم نسخ رابط السلعة بنجاح! 🔗");
+            }).catch(() => {
+                const temp = document.createElement('input');
+                temp.value = window.location.href;
+                document.body.appendChild(temp);
+                temp.select();
+                document.execCommand('copy');
+                document.body.removeChild(temp);
+                showToast("تم نسخ رابط السلعة بنجاح! 🔗");
+            });
         }
 
-        // 11. إضافة ونشر معروض جديد من الهاتف
         function openAddModal() {
             const modal = document.getElementById('add-product-modal');
             const card = document.getElementById('add-card');
-            
             modal.classList.remove('opacity-0', 'pointer-events-none');
             card.classList.remove('modal-inactive');
             card.classList.add('modal-active');
@@ -1364,21 +1344,17 @@
         function closeAddModal() {
             const modal = document.getElementById('add-product-modal');
             const card = document.getElementById('add-card');
-            
-            card.className = "bg-white w-full max-h-[92%] rounded-t-[32px] overflow-hidden flex flex-col modal-inactive";
-            setTimeout(() => {
-                modal.classList.add('opacity-0', 'pointer-events-none');
-            }, 250);
+            card.classList.remove('modal-active');
+            card.classList.add('modal-inactive');
+            setTimeout(() => modal.classList.add('opacity-0', 'pointer-events-none'), 250);
         }
 
         function initAddFormCategories() {
             const select = document.getElementById('new-category');
-            select.innerHTML = categories.slice(1).map(cat => `
-                <option value="${cat}">${cat}</option>
-            `).join('');
+            if (select) select.innerHTML = categories.slice(1).map(cat => `<option value="${escapeHtml(cat)}">${escapeHtml(cat)}</option>`).join('');
         }
 
-        function publishProduct() {
+        async function publishProduct() {
             const title = document.getElementById('new-title').value.trim();
             const price = document.getElementById('new-price').value.trim();
             const category = document.getElementById('new-category').value;
@@ -1392,74 +1368,94 @@
                 return;
             }
 
-            // تعيين صورة افتراضية عند تعذر اختيار صورة
-            const finalImage = uploadedImageBase64 || "https://images.unsplash.com/photo-1531403009284-440f080d1e12?auto=format&fit=crop&q=80&w=400";
-            const formattedPrice = parseFloat(price).toLocaleString('fr-FR');
-            
-            const newProduct = {
-                id: Date.now(),
-                title: title,
-                price: formattedPrice,
-                location: location,
-                category: category,
-                phone: phone,
-                whatsapp: whatsapp,
-                image: finalImage,
-                description: desc || "تم نشر الإعلان بواسطة بائع معتمد في متجر ريم الإلكتروني، تواصل معه عبر الهاتف أو الواتساب للاستفسار."
-            };
+            const publishButton = event?.target;
+            if (publishButton) {
+                publishButton.disabled = true;
+                publishButton.innerText = 'جاري النشر...';
+            }
 
-            products.unshift(newProduct);
+            try {
+                let finalImage = DEFAULT_PRODUCT_IMAGE;
+                if (uploadedImageFile) {
+                    finalImage = await uploadImageToSupabase(uploadedImageFile);
+                }
 
-            // تصفير الخانات
-            document.getElementById('new-title').value = '';
-            document.getElementById('new-price').value = '';
-            document.getElementById('new-location').value = '';
-            document.getElementById('new-phone').value = '';
-            document.getElementById('new-whatsapp').value = '';
-            document.getElementById('new-desc').value = '';
-            
-            document.getElementById('file-label-text').innerText = 'اضغط لاختيار صورة';
-            document.getElementById('ad-image-preview').classList.add('hidden');
-            document.getElementById('image-placeholder-icon').classList.remove('hidden');
-            uploadedImageBase64 = '';
+                const newProduct = {
+                    title,
+                    price: formatPrice(price),
+                    location,
+                    category,
+                    phone,
+                    whatsapp: normalizeWhatsappNumber(whatsapp),
+                    image: finalImage,
+                    description: desc || "تم نشر الإعلان في متجر ريم الإلكتروني، تواصل مع صاحب الإعلان عبر الهاتف أو الواتساب للاستفسار."
+                };
 
-            renderProducts();
-            renderAdminProducts();
-            updateTotalIndicators();
-            saveLocalData();
-            closeAddModal();
-            
-            navigate('market');
-            showToast("تهانينا! تم إرسال ونشر بضاعتك في متجر ريم 🎉");
+                const { error } = await supabaseClient.from('products').insert([newProduct]);
+                if (error) throw error;
+
+                resetAddForm();
+                closeAddModal();
+                navigate('market');
+                showToast("تم نشر المنتج وسيظهر عند كل الناس 🎉");
+                await loadProductsFromSupabase();
+            } catch (error) {
+                console.error(error);
+                showToast("⚠️ تعذر نشر المنتج. تأكد من سياسات Supabase و bucket الصور.");
+            } finally {
+                if (publishButton) {
+                    publishButton.disabled = false;
+                    publishButton.innerText = 'نشر وتثبيت الإعلان فوراً 🚀';
+                }
+            }
         }
 
-        // 12. تعديل معروضات المتجر بواسطة المدير المتحكم (لوحة التحكم)
+        function resetAddForm() {
+            ['new-title', 'new-price', 'new-location', 'new-phone', 'new-whatsapp', 'new-desc'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.value = '';
+            });
+            const fileInput = document.getElementById('new-image-file');
+            if (fileInput) fileInput.value = '';
+            const fileLabel = document.getElementById('file-label-text');
+            if (fileLabel) fileLabel.innerText = 'اضغط لاختيار صورة';
+            const preview = document.getElementById('ad-image-preview');
+            if (preview) preview.classList.add('hidden');
+            const placeholder = document.getElementById('image-placeholder-icon');
+            if (placeholder) placeholder.classList.remove('hidden');
+            uploadedImageBase64 = '';
+            uploadedImageFile = null;
+        }
+
         function initEditFormCategories() {
             const select = document.getElementById('edit-category');
-            select.innerHTML = categories.slice(1).map(cat => `
-                <option value="${cat}">${cat}</option>
-            `).join('');
+            if (select) select.innerHTML = categories.slice(1).map(cat => `<option value="${escapeHtml(cat)}">${escapeHtml(cat)}</option>`).join('');
         }
 
         function openEditModal(productId) {
+            if (!isAdminLoggedIn) {
+                showToast('⚠️ يرجى تسجيل الدخول كمدير أولاً');
+                navigate('admin');
+                return;
+            }
             const product = products.find(p => p.id === productId);
             if (!product) return;
 
             document.getElementById('edit-product-id').value = product.id;
             document.getElementById('edit-title').value = product.title;
-            // إزالة المسافات من السعر ليتناسب مع المدخل الرقمي
-            document.getElementById('edit-price').value = parseFloat(product.price.replace(/\s/g, ''));
+            document.getElementById('edit-price').value = String(product.price).replace(/\s/g, '');
             document.getElementById('edit-category').value = product.category;
             document.getElementById('edit-location').value = product.location;
             document.getElementById('edit-phone').value = product.phone;
             document.getElementById('edit-whatsapp').value = product.whatsapp;
             document.getElementById('edit-desc').value = product.description;
-
-            editedImageBase64 = product.image; // الاحتفاظ بالصورة القديمة افتراضياً
+            editedImageBase64 = product.image;
+            editedImageFile = null;
+            const fileInput = document.getElementById('edit-image-file');
+            if (fileInput) fileInput.value = '';
 
             const modal = document.getElementById('edit-product-modal');
             const card = document.getElementById('edit-card');
-            
             modal.classList.remove('opacity-0', 'pointer-events-none');
             card.classList.remove('modal-inactive');
             card.classList.add('modal-active');
@@ -1468,15 +1464,13 @@
         function closeEditModal() {
             const modal = document.getElementById('edit-product-modal');
             const card = document.getElementById('edit-card');
-            
-            card.className = "bg-white w-full max-h-[92%] rounded-t-[32px] overflow-hidden flex flex-col modal-inactive";
-            setTimeout(() => {
-                modal.classList.add('opacity-0', 'pointer-events-none');
-            }, 250);
+            card.classList.remove('modal-active');
+            card.classList.add('modal-inactive');
+            setTimeout(() => modal.classList.add('opacity-0', 'pointer-events-none'), 250);
         }
 
-        function saveProductEdits() {
-            const id = parseInt(document.getElementById('edit-product-id').value);
+        async function saveProductEdits() {
+            const id = Number(document.getElementById('edit-product-id').value);
             const title = document.getElementById('edit-title').value.trim();
             const price = document.getElementById('edit-price').value.trim();
             const category = document.getElementById('edit-category').value;
@@ -1490,58 +1484,54 @@
                 return;
             }
 
-            const formattedPrice = parseFloat(price).toLocaleString('fr-FR');
-
-            // تحديث السلعة داخل المصفوفة
-            products = products.map(p => {
-                if (p.id === id) {
-                    return {
-                        ...p,
-                        title,
-                        price: formattedPrice,
-                        category,
-                        location,
-                        phone,
-                        whatsapp,
-                        image: editedImageBase64,
-                        description: desc
-                    };
+            try {
+                let finalImage = editedImageBase64 || DEFAULT_PRODUCT_IMAGE;
+                if (editedImageFile) {
+                    finalImage = await uploadImageToSupabase(editedImageFile);
                 }
-                return p;
-            });
 
-            showToast("تم تحديث السلعة بنجاح بصفة مدير المتجر! ⚙️", true);
-            renderProducts();
-            renderFavorites();
-            renderAdminProducts();
-            updateTotalIndicators();
-            saveLocalData();
-            closeEditModal();
+                const payload = {
+                    title,
+                    price: formatPrice(price),
+                    category,
+                    location,
+                    phone,
+                    whatsapp: normalizeWhatsappNumber(whatsapp),
+                    image: finalImage,
+                    description: desc || "لا يوجد وصف إضافي."
+                };
+
+                const { error } = await supabaseClient.from('products').update(payload).eq('id', id);
+                if (error) throw error;
+
+                showToast("تم تحديث السلعة عند كل الناس! ⚙️", true);
+                closeEditModal();
+                await loadProductsFromSupabase();
+            } catch (error) {
+                showToast('⚠️ تعذر حفظ التعديلات');
+                console.error(error);
+            }
         }
 
-        // 13. نظام التنبيهات العائمة المطور
         function showToast(msg, isAdminAction = false) {
             const toast = document.getElementById('toast');
             const iconBox = document.getElementById('toast-icon-box');
-            document.getElementById('toast-message').innerText = msg;
-            
-            // تغيير لون أيقونة التنبيه للتناسق مع أفعال المدير
-            if (isAdminAction) {
-                iconBox.className = "bg-purple-600 p-1.5 rounded-full flex items-center justify-center";
-            } else {
-                iconBox.className = "bg-emerald-500 p-1.5 rounded-full flex items-center justify-center";
-            }
+            const msgBox = document.getElementById('toast-message');
+            if (!toast || !msgBox || !iconBox) return;
+
+            msgBox.innerText = msg;
+            iconBox.className = isAdminAction
+                ? "bg-purple-600 p-1.5 rounded-full flex items-center justify-center"
+                : "bg-emerald-500 p-1.5 rounded-full flex items-center justify-center";
 
             toast.classList.remove('opacity-0', 'pointer-events-none');
             toast.classList.add('opacity-100');
-            
-            setTimeout(() => {
-                hideToast();
-            }, 3000);
+            setTimeout(hideToast, 3000);
         }
 
         function hideToast() {
             const toast = document.getElementById('toast');
+            if (!toast) return;
             toast.classList.remove('opacity-100');
             toast.classList.add('opacity-0', 'pointer-events-none');
         }
